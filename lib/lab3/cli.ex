@@ -1,36 +1,71 @@
 defmodule Lab3.CLI do
   @moduledoc """
-  CLI: парсит аргументы, запускает Engine и читает stdin -> Engine.
+  CLI: парсит аргументы, запускает Engine и поднимает Supervisor/Reader,
+  который читает stdin потоково и шлёт точки в Engine.
   """
 
   alias Lab3.Stream.Engine
-  alias Lab3.IO.Parser
 
   @spec main([String.t()]) :: :ok
   def main(argv) do
+    # Чтобы нормальный shutdown дочерних процессов не “ронял” CLI
+    Process.flag(:trap_exit, true)
+
     opts = parse_args(argv)
 
     if opts.help do
       IO.puts(help_text())
       :ok
     else
-      engine = Engine.start(step: opts.step, algs: opts.algs, sep: opts.out_sep)
+      engine =
+        Engine.start(
+          step: opts.step,
+          algs: opts.algs,
+          sep: opts.out_sep,
+          window: opts.window
+        )
 
-      IO.stream(:stdio, :line)
-      |> Stream.map(&String.trim/1)
-      |> Stream.reject(&(&1 == ""))
-      |> Enum.each(fn line ->
-        case Parser.parse_line(line, opts.in_sep) do
-          {:ok, point} -> send(engine, {:point, point})
-          {:error, _} -> :ok
-        end
-      end)
+      {:ok, sup_pid} =
+        Lab3.AppSupervisor.start_link(
+          engine: engine,
+          in_sep: opts.in_sep
+        )
 
-      send(engine, :eof)
-      :ok
+      wait_until_done(engine, sup_pid)
     end
   end
 
+  defp wait_until_done(engine, sup_pid) do
+    receive do
+      {:done, ^engine} ->
+        # останавливаем supervisor (если ещё жив)
+        if Process.alive?(sup_pid), do: Process.exit(sup_pid, :normal)
+        :ok
+
+      {:EXIT, _from, :normal} ->
+        # нормальное завершение — игнорируем
+        wait_until_done(engine, sup_pid)
+
+      {:EXIT, _from, :shutdown} ->
+        # нормальное “дерево” завершилось — игнорируем
+        wait_until_done(engine, sup_pid)
+
+      {:EXIT, _from, {:shutdown, _}} ->
+        wait_until_done(engine, sup_pid)
+
+      {:EXIT, _from, reason} ->
+        # если вдруг упало нештатно — можно вывести в stderr
+        IO.puts(:stderr, "Process exit: #{inspect(reason)}")
+        :ok
+    after
+      60_000 ->
+        :ok
+    end
+  end
+
+  # --------------------
+  # Аргументы командной строки
+  # --------------------
   defp parse_args(argv) do
     {parsed, _, _} =
       OptionParser.parse(argv,
@@ -77,6 +112,9 @@ defmodule Lab3.CLI do
   defp normalize_in_sep("tab"), do: "\t"
   defp normalize_in_sep(other), do: other
 
+  # --------------------
+  # Help
+  # --------------------
   defp help_text do
     """
     lab3 — streaming interpolation (FP)
@@ -96,7 +134,7 @@ defmodule Lab3.CLI do
     Options:
       --help            Show this help
       --linear          Enable linear interpolation
-      --newton          Enable Newton interpolation (will be added next)
+      --newton          Enable Newton interpolation
       -n, --window N    Window size for Newton (e.g. 4)
       --step S          Output discretization step (e.g. 0.5)
       --sep SEP         Output separator: space | semicolon | tab (default: space)
