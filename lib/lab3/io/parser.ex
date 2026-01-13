@@ -26,8 +26,13 @@ defmodule Lab3.IO.Parser do
   end
 
   defp do_parse(line, "space"), do: split_parse(line, ~r/\s+/)
-  defp do_parse(line, "semicolon"), do: split_parse(line, ";")
+  defp do_parse(line, " "), do: split_parse(line, ~r/\s+/)
+
+  defp do_parse(line, "semicolon"), do: split_parse(line, "; ")
+  defp do_parse(line, ";"), do: split_parse(line, ";")
+
   defp do_parse(line, "tab"), do: split_parse(line, "\t")
+  defp do_parse(line, "\t"), do: split_parse(line, "\t")
 
   defp split_parse(line, pattern) do
     parts =

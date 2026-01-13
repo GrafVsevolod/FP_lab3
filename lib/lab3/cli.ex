@@ -1,71 +1,48 @@
 defmodule Lab3.CLI do
   @moduledoc """
-  CLI: парсит аргументы, запускает Engine и поднимает Supervisor/Reader,
-  который читает stdin потоково и шлёт точки в Engine.
+  CLI: парсит аргументы, запускает Supervisor (который поднимает Engine + Reader),
+  ждёт завершения Engine и завершается.
+
+  Потоковый режим: данные читаются из stdin, результат пишется в stdout.
   """
 
-  alias Lab3.Stream.Engine
+  alias Lab3.AppSupervisor
 
   @spec main([String.t()]) :: :ok
   def main(argv) do
-    # Чтобы нормальный shutdown дочерних процессов не “ронял” CLI
-    Process.flag(:trap_exit, true)
-
     opts = parse_args(argv)
 
     if opts.help do
       IO.puts(help_text())
       :ok
     else
-      engine =
-        Engine.start(
+      # ВАЖНО: parent = CLI-процесс, чтобы получить {:done, pid} от Engine
+      {:ok, _sup} =
+        AppSupervisor.start_link(
+          parent: self(),
           step: opts.step,
           algs: opts.algs,
           sep: opts.out_sep,
+          in_sep: opts.in_sep,
           window: opts.window
         )
 
-      {:ok, sup_pid} =
-        Lab3.AppSupervisor.start_link(
-          engine: engine,
-          in_sep: opts.in_sep
-        )
-
-      wait_until_done(engine, sup_pid)
+      wait_done()
+      :ok
     end
   end
 
-  defp wait_until_done(engine, sup_pid) do
+  defp wait_done do
     receive do
-      {:done, ^engine} ->
-        # останавливаем supervisor (если ещё жив)
-        if Process.alive?(sup_pid), do: Process.exit(sup_pid, :normal)
-        :ok
-
-      {:EXIT, _from, :normal} ->
-        # нормальное завершение — игнорируем
-        wait_until_done(engine, sup_pid)
-
-      {:EXIT, _from, :shutdown} ->
-        # нормальное “дерево” завершилось — игнорируем
-        wait_until_done(engine, sup_pid)
-
-      {:EXIT, _from, {:shutdown, _}} ->
-        wait_until_done(engine, sup_pid)
-
-      {:EXIT, _from, reason} ->
-        # если вдруг упало нештатно — можно вывести в stderr
-        IO.puts(:stderr, "Process exit: #{inspect(reason)}")
+      {:done, _pid} ->
         :ok
     after
-      60_000 ->
+      5_000 ->
+        IO.puts("Timeout: engine did not finish")
         :ok
     end
   end
 
-  # --------------------
-  # Аргументы командной строки
-  # --------------------
   defp parse_args(argv) do
     {parsed, _, _} =
       OptionParser.parse(argv,
@@ -112,9 +89,6 @@ defmodule Lab3.CLI do
   defp normalize_in_sep("tab"), do: "\t"
   defp normalize_in_sep(other), do: other
 
-  # --------------------
-  # Help
-  # --------------------
   defp help_text do
     """
     lab3 — streaming interpolation (FP)

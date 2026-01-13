@@ -1,8 +1,9 @@
 defmodule Lab3.IO.Reader do
   @moduledoc """
-  Reader (GenServer): читает stdin потоково и шлёт точки в Engine.
+  Reader читает stdin в потоковом режиме и отправляет точки в Engine.
 
-  Это "второй" способ параллельности: OTP GenServer.
+  Работает как GenServer (под Supervisor), чтобы показать второй подход
+  к параллельности: behaviour (GenServer).
   """
 
   use GenServer
@@ -11,8 +12,9 @@ defmodule Lab3.IO.Reader do
 
   @type point :: {number(), number()}
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    GenServer.start_link(__MODULE__, opts)
   end
 
   @impl true
@@ -20,30 +22,25 @@ defmodule Lab3.IO.Reader do
     engine = Keyword.fetch!(opts, :engine)
     in_sep = Keyword.get(opts, :in_sep, :auto)
 
-    # запускаем чтение stdin в отдельном процессе, чтобы GenServer не блокировался
-    parent = self()
+    # читаем stdin в отдельном процессе (spawn) и шлём точки в engine
+    spawn(fn -> read_loop(engine, in_sep) end)
 
-    spawn(fn ->
-      IO.stream(:stdio, :line)
-      |> Stream.map(&String.trim/1)
-      |> Stream.reject(&(&1 == ""))
-      |> Enum.each(fn line ->
-        case Parser.parse_line(line, in_sep) do
-          {:ok, point} -> send(engine, {:point, point})
-          :skip -> :ok
-          {:error, _} -> :ok
-        end
-      end)
-
-      send(parent, :stdin_done)
-    end)
-
-    {:ok, %{engine: engine}}
+    {:ok, %{engine: engine, in_sep: in_sep}}
   end
 
-  @impl true
-  def handle_info(:stdin_done, state) do
-    send(state.engine, :eof)
-    {:stop, :normal, state}
+  defp read_loop(engine, in_sep) do
+    IO.stream(:stdio, :line)
+    |> Stream.map(&String.trim/1)
+    |> Stream.reject(&(&1 == ""))
+    |> Enum.each(fn line ->
+      case Parser.parse_line(line, in_sep) do
+        {:ok, point} -> send(engine, {:point, point})
+        :skip -> :ok
+        {:error, _} -> :ok
+      end
+    end)
+
+    # EOF
+    send(engine, :eof)
   end
 end
